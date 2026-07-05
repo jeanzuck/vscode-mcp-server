@@ -11,7 +11,13 @@ https://github.com/user-attachments/assets/20b87dfb-fc39-4710-a910-b9481dde1e90
 
 ## Installation
 
-1. Install the extension from the [Marketplace](https://marketplace.visualstudio.com/items?itemName=JuehangQin.vscode-mcp-server) or clone this repository and run `npm install` and `npm run compile` to build it.
+1. Install the extension from the [Marketplace](https://marketplace.visualstudio.com/items?itemName=JuehangQin.vscode-mcp-server).
+2. Or install from source:
+  - Clone this repository.
+  - Run `npm install`.
+  - Run `npm run compile`.
+  - Run `npx @vscode/vsce package` to create the `.vsix` file.
+  - Install the generated package with `code --install-extension vscode-mcp-server-0.4.0.vsix`.
 
 ## Claude Desktop Configuration
 

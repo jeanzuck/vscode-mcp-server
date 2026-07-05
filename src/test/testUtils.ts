@@ -69,6 +69,7 @@ export function createMockContext(): PartialExtensionContext {
             get: () => Promise.resolve(undefined),
             store: () => Promise.resolve(),
             delete: () => Promise.resolve(),
+            keys: () => Promise.resolve([]),
             onDidChange: secretStorageChangeEmitter.event
         }
     };
