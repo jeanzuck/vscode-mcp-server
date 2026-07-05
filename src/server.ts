@@ -1,4 +1,5 @@
 import express from "express";
+import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -29,6 +30,7 @@ export class MCPServer {
     private fileListingCallback?: FileListingCallback;
     private terminal?: vscode.Terminal;
     private toolConfig: ToolConfiguration;
+    private transportResetPromise?: Promise<void>;
 
     public setFileListingCallback(callback: FileListingCallback) {
         this.fileListingCallback = callback;
@@ -62,13 +64,50 @@ export class MCPServer {
         });
 
         // Initialize transport
-        this.transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: undefined,
-        });
+        this.transport = this.createTransport();
 
         // Note: setupTools() is no longer called here
         this.setupRoutes();
         this.setupEventHandlers();
+    }
+
+    private createTransport(): StreamableHTTPServerTransport {
+        return new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+            enableJsonResponse: true,
+        });
+    }
+
+    private isInitializeRequestBody(body: unknown): boolean {
+        if (!body || Array.isArray(body) || typeof body !== 'object') {
+            return false;
+        }
+
+        return (body as { method?: unknown }).method === 'initialize';
+    }
+
+    private async resetTransportForInitialize(): Promise<void> {
+        if (this.transportResetPromise) {
+            await this.transportResetPromise;
+            return;
+        }
+
+        this.transportResetPromise = (async () => {
+            try {
+                await this.transport.close();
+            } catch (error) {
+                logger.warn(`Transport close during initialize reset failed: ${error instanceof Error ? error.message : String(error)}`);
+            }
+
+            this.transport = this.createTransport();
+            await this.server.connect(this.transport);
+        })();
+
+        try {
+            await this.transportResetPromise;
+        } finally {
+            this.transportResetPromise = undefined;
+        }
     }
     
     public setupTools(): void {
@@ -121,10 +160,28 @@ export class MCPServer {
     }
 
     private setupRoutes(): void {
+        const oauthMetadata = {
+            resource: `http://${this.host}:${this.port}/mcp`,
+            authorization_servers: [] as string[]
+        };
+
+        // OAuth discovery probes from some MCP clients expect JSON here.
+        this.app.get('/.well-known/oauth-protected-resource', (req, res) => {
+            res.json(oauthMetadata);
+        });
+
+        this.app.get('/.well-known/oauth-protected-resource/mcp', (req, res) => {
+            res.json(oauthMetadata);
+        });
+
         // Handle POST requests for client-to-server communication
         this.app.post('/mcp', async (req, res) => {
             logger.info(`Request received: ${req.method} ${req.url}`);
             try {
+                if (this.isInitializeRequestBody(req.body)) {
+                    await this.resetTransportForInitialize();
+                }
+
                 await this.transport.handleRequest(req, res, req.body);
             } catch (error) {
                 logger.error(`Error handling MCP request: ${error instanceof Error ? error.message : String(error)}`);
@@ -161,29 +218,43 @@ export class MCPServer {
             }
         });
 
-        // Handle unsupported methods
+        // Streamable HTTP transport can use GET/DELETE on the same endpoint.
         this.app.get('/mcp', async (req, res) => {
             logger.info('Received GET MCP request');
-            res.writeHead(405).end(JSON.stringify({
-                jsonrpc: "2.0",
-                error: {
-                    code: -32000,
-                    message: "Method not allowed."
-                },
-                id: null
-            }));
+            try {
+                await this.transport.handleRequest(req, res, undefined);
+            } catch (error) {
+                logger.error(`Error handling GET MCP request: ${error instanceof Error ? error.message : String(error)}`);
+                if (!res.headersSent) {
+                    res.status(500).json({
+                        jsonrpc: '2.0',
+                        error: {
+                            code: -32603,
+                            message: 'Internal server error',
+                        },
+                        id: null,
+                    });
+                }
+            }
         });
 
         this.app.delete('/mcp', async (req, res) => {
             logger.info('Received DELETE MCP request');
-            res.writeHead(405).end(JSON.stringify({
-                jsonrpc: "2.0",
-                error: {
-                    code: -32000,
-                    message: "Method not allowed."
-                },
-                id: null
-            }));
+            try {
+                await this.transport.handleRequest(req, res, undefined);
+            } catch (error) {
+                logger.error(`Error handling DELETE MCP request: ${error instanceof Error ? error.message : String(error)}`);
+                if (!res.headersSent) {
+                    res.status(500).json({
+                        jsonrpc: '2.0',
+                        error: {
+                            code: -32603,
+                            message: 'Internal server error',
+                        },
+                        id: null,
+                    });
+                }
+            }
         });
 
         // Handle OPTIONS requests for CORS
